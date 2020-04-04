@@ -1,8 +1,26 @@
+const knex = require('knex')
+const fixtures = require('./bookmarks-fixtures')
 const app = require('../src/app')
 const store = require('../src/store')
 
 describe('Bookmarks Endpoints', () => {
-  let bookmarksCopy
+  let bookmarksCopy, db
+
+  before('make knex instance', () => {
+    db = knex({
+      client: 'pg',
+      connection: process.env.TEST_DB_URL,
+    })
+    app.set('db', db)
+  })
+
+  after('disconnect from db', () => db.destroy())
+
+  before('cleanup', () => db('bookmarks').truncate())
+
+  afterEach('cleanup', () => db('bookmarks').truncate())
+
+  
   beforeEach('copy the bookmarks', () => {
     // copy the bookmarks so we can restore them after testing
     bookmarksCopy = store.bookmarks.slice()
@@ -12,6 +30,7 @@ describe('Bookmarks Endpoints', () => {
     // restore the bookmarks back to original
     store.bookmarks = bookmarksCopy
   })
+
   describe(`Unauthorized requests`, () => {
     it(`responds with 401 Unauthorized for GET /bookmarks`, () => {
       return supertest(app)
@@ -42,29 +61,62 @@ describe('Bookmarks Endpoints', () => {
   })
 
   describe('GET /bookmarks', () => {
-    it('gets the bookmarks from the store', () => {
-      return supertest(app)
-        .get('/bookmarks')
-        .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
-        .expect(200, store.bookmarks)
+    context(`Given no bookmarks`, () => {
+      it(`responds with 200 and an empty list`, () => {
+        return supertest(app)
+          .get('/bookmarks')
+          .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
+          .expect(200, [])
+      })
+    })
+
+    context('Given there are bookmarks in the database', () => {
+      const testBookmarks = fixtures.makeBookmarksArray()
+
+      beforeEach('insert bookmarks', () => {
+        return db
+          .into('bookmarks')
+          .insert(testBookmarks)
+      })
+
+      it('gets the bookmarks from the store', () => {
+        return supertest(app)
+          .get('/bookmarks')
+          .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
+          .expect(200, testBookmarks)
+      })
     })
   })
 
-
   describe('GET /bookmarks/:id', () => {
-    it('gets the bookmark by ID from the store', () => {
-      const secondBookmark = store.bookmarks[1]
-      return supertest(app)
-        .get(`/bookmarks/${secondBookmark.id}`)
-        .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
-        .expect(200, secondBookmark)
+    context(`Given no bookmarks`, () => {
+      it(`responds 404 whe bookmark doesn't exist`, () => {
+        return supertest(app)
+          .get(`/bookmarks/123`)
+          .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
+          .expect(404, {
+            error: { message: `Bookmark Not Found` }
+          })
+      })
     })
 
-    it(`returns 404 whe bookmark doesn't exist`, () => {
-      return supertest(app)
-        .get(`/bookmarks/doesnt-exist`)
-        .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
-        .expect(404, 'Bookmark Not Found')
+    context('Given there are bookmarks in the database', () => {
+      const testBookmarks = fixtures.makeBookmarksArray()
+
+      beforeEach('insert bookmarks', () => {
+        return db
+          .into('bookmarks')
+          .insert(testBookmarks)
+      })
+
+      it('responds with 200 and the specified bookmark', () => {
+        const bookmarkId = 2
+        const expectedBookmark = testBookmarks[bookmarkId - 1]
+        return supertest(app)
+          .get(`/bookmarks/${bookmarkId}`)
+          .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
+          .expect(200, expectedBookmark)
+      })
     })
   })
 
@@ -142,6 +194,18 @@ describe('Bookmarks Endpoints', () => {
         .expect(400, `'rating' must be a number between 0 and 5`)
     })
 
+    it(`responds with 400 invalid 'url' if not a valid URL`, () => {
+      const newBookmarkInvalidUrl = {
+        title: 'test-title',
+        url: 'htp://invalid-url',
+        rating: 1,
+      }
+      return supertest(app)
+        .post(`/bookmarks`)
+        .send(newBookmarkInvalidUrl)
+        .set('Authorization', `Bearer ${process.env.API_TOKEN}`)
+        .expect(400, `'url' must be a valid URL`)
+    })
 
     it('adds a new bookmark to the store', () => {
       const newBookmark = {
